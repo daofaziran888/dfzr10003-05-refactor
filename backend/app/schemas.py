@@ -19,6 +19,9 @@ class ActionResult(BaseModel):
     ok: bool
     message: str
     entry: dict[str, Any] | None = None
+    # 幂等键的动作序号与拒绝原因：动作被拦下时也回传，页面据此停在原状态并展示原因。
+    action_seq: int | None = None
+    reject_reason: str | None = None
 
 
 class EntryPayload(BaseModel):

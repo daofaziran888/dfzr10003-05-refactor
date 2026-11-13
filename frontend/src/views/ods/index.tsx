@@ -11,7 +11,10 @@ const columns = [
   "接入周期",
   "分区粒度",
   "保留天数",
-  "最近接入时间"
+  "最近接入时间",
+  "动作序号",
+  "分区水位",
+  "拒绝原因"
 ]
 const actions = [
   "启动接入",
@@ -70,13 +73,20 @@ export default function OdsView() {
 
   async function runAction(action: string, row: Row) {
     setErrorMessage('')
+    // 幂等键 = 流水编号 + 动作序号；序号取页面上的最新值 +1，失败可原样重试。
+    const actionSeq = Number(row['动作序号'] ?? 0) + 1
     try {
       const response = await request(`${ENDPOINT}/${row.id}/actions`, {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ values: { action, action_seq: actionSeq } }),
       })
       if (!response.ok) {
         throw new Error('贴源层接入动作未生效，请稍后重试')
+      }
+      const payload = await response.json()
+      // 服务端按显式迁移表/幂等键拒绝：不本地改状态，reload 后页面停在原状态并展示拒绝原因。
+      if (payload.ok === false) {
+        setErrorMessage(payload.reject_reason ?? payload.message ?? '贴源层接入动作被拒绝')
       }
       await reload()
     } catch (error) {

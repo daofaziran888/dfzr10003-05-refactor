@@ -1,15 +1,22 @@
-"""明细层清洗业务规则：状态流转、字段校验与筛选口径都收在这里。"""
+"""明细层清洗业务规则。
+
+清洗动作同样走 ``services.flow`` 引擎：启动清洗必须通过上游 ODS 的清洗准入，
+准入状态随 ODS 接入状态在同一次事务里同步到本清单。
+"""
 from __future__ import annotations
 
 from typing import Any
 
+from app.services.flow import (
+    DWD_MODULE,
+    WriteFailed,
+    registry,
+)
 from app.store import store
 
-MODULE = "dwd"
+MODULE = DWD_MODULE
 REQUIRED_FIELDS = ["流水编号", "输入表名", "输出表名"]
-STATUS_ORDER = ["草稿", "运行中", "已暂停", "已完成"]
-ACTION_RULES = {"启动清洗": "草稿", "暂停清洗": "运行中", "归档流水": "已暂停"}
-NEGATIVE_ACTIONS = []
+STATUS_ORDER = ["草稿", "运行中", "已暂停", "已完成", "已归档"]
 
 
 class DwdService:
@@ -21,7 +28,7 @@ class DwdService:
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
-        rows = store.rows(MODULE)
+        rows = [registry.project(MODULE, row) for row in store.rows(MODULE)]
         if keyword:
             rows = [row for row in rows if keyword in str(row.get("流水编号", ""))]
         if status:
@@ -31,7 +38,8 @@ class DwdService:
         return rows[start:start + size], total
 
     def get_entry(self, entry_id: int) -> dict[str, Any] | None:
-        return store.find(MODULE, entry_id)
+        row = store.find(MODULE, entry_id)
+        return registry.project(MODULE, row) if row is not None else None
 
     def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
         missing = [field for field in REQUIRED_FIELDS if not str(values.get(field) or "").strip()]
@@ -44,18 +52,17 @@ class DwdService:
         entry["pending"] = True
         entry["abnormal"] = False
         rows.append(entry)
-        return entry, []
+        registry.register(MODULE, str(entry["流水编号"]))
+        return registry.project(MODULE, entry), []
 
-    def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
-        entry = store.find(MODULE, entry_id)
-        if entry is None:
+    def run_action(
+        self, entry_id: int, action: str, action_seq: Any = None
+    ) -> tuple[dict[str, Any] | None, str]:
+        row = store.find(MODULE, entry_id)
+        if row is None:
             return None, f"清洗流水 {entry_id} 不存在或已归档"
-        if action not in ACTION_RULES:
-            return None, f"动作「{action}」不属于明细层清洗可执行范围"
-        target = ACTION_RULES[action]
-        if target not in STATUS_ORDER:
-            return None, f"目标状态「{target}」不在允许的状态序列里"
-        entry["status"] = target
-        entry["pending"] = target != STATUS_ORDER[-1]
-        entry["abnormal"] = action in NEGATIVE_ACTIONS
-        return entry, f"清洗流水已{action}"
+        serial = str(row["流水编号"])
+        try:
+            return registry.submit(MODULE, serial, action.strip(), action_seq)
+        except WriteFailed as exc:
+            return None, str(exc)

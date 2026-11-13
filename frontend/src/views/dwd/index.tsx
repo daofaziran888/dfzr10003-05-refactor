@@ -11,7 +11,12 @@ const columns = [
   "格式转换",
   "脏数据比例",
   "执行批次",
-  "清洗状态"
+  "清洗状态",
+  "动作序号",
+  "分区水位",
+  "上游接入状态",
+  "清洗准入",
+  "拒绝原因"
 ]
 const actions = [
   "启动清洗",
@@ -70,13 +75,20 @@ export default function DwdView() {
 
   async function runAction(action: string, row: Row) {
     setErrorMessage('')
+    // 幂等键 = 流水编号 + 动作序号；启动清洗还要过上游 ODS 的清洗准入。
+    const actionSeq = Number(row['动作序号'] ?? 0) + 1
     try {
       const response = await request(`${ENDPOINT}/${row.id}/actions`, {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ values: { action, action_seq: actionSeq } }),
       })
       if (!response.ok) {
         throw new Error('明细层清洗动作未生效，请稍后重试')
+      }
+      const payload = await response.json()
+      // 被迁移表/准入/幂等键拒绝时不本地改状态，reload 后两页都停在原状态并展示原因。
+      if (payload.ok === false) {
+        setErrorMessage(payload.reject_reason ?? payload.message ?? '明细层清洗动作被拒绝')
       }
       await reload()
     } catch (error) {

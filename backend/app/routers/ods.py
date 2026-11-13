@@ -30,6 +30,13 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出贴源层接入清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "ods", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条接入流水明细；不存在时给出可读的错误说明。"""
@@ -50,16 +57,19 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条接入流水执行启动接入、暂停接入、归档流水；不允许的动作会被拦下并说明原因。"""
+    """对单条接入流水执行启动接入、暂停接入、完成接入、归档流水。
+
+    动作解释以显式迁移表为准，``action_seq`` 与流水编号组成幂等键；校验不通过或
+    写入回滚时 ``ok=false`` 并带回拒绝原因，页面状态保持不变，可凭同一序号重试。
+    """
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    action_seq = payload.values.get("action_seq")
+    entry, message = service.run_action(entry_id, action, action_seq)
     if entry is None:
-        return ActionResult(ok=False, message=message)
-    return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出贴源层接入清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "ods", "total": total, "items": items}
+        return ActionResult(ok=False, message=message, reject_reason=message)
+    return ActionResult(
+        ok=True,
+        message=message,
+        entry=entry,
+        action_seq=entry.get("动作序号"),
+    )
